@@ -359,14 +359,23 @@ jobs:
             const skipDiff = diffSkips(oldSkip, skipReport);
 
             const embeds = [];
-
+            
+            function wasPreviouslyBroken(repo, oldSkipList) {
+              return oldSkipList.some(e => e.repo === repo);
+            }
+            
             for (const mod of melonDiff.added) {
-              embeds.push(buildModEmbed("🟢 New Melon Mod", mod, 0x00ff00));
-            }
-            for (const mod of bepDiff.added) {
-              embeds.push(buildModEmbed("🟢 New BepInEx Mod", mod, 0x00ff00));
+              if (!wasPreviouslyBroken(mod.repo, oldSkip)) {
+                embeds.push(buildModEmbed("🟢 New Melon Mod", mod, 0x00ff00));
+              }
             }
 
+            for (const mod of bepDiff.added) {
+              if (!wasPreviouslyBroken(mod.repo, oldSkip)) {
+                embeds.push(buildModEmbed("🟢 New BepInEx Mod", mod, 0x00ff00));
+              }
+            }
+            
             for (const mod of melonDiff.updated) {
               embeds.push(buildModEmbed("🟦 Updated Melon Mod", mod, 0x0000ff));
             }
@@ -386,7 +395,12 @@ jobs:
             }
 
             for (const entry of skipDiff.fixed) {
-              embeds.push(buildSkipEmbed("🟢 Fixed Mod (No Longer Skipped)", entry, 0x00ff00));
+              const mod = melonMods.find(m => m.repo === entry.repo)
+              || bepinexMods.find(m => m.repo === entry.repo);
+
+              if (mod) {
+                embeds.push(buildModEmbed("🟢 Fixed Mod (No Longer Skipped)", mod, 0x00ff00));
+              }
             }
 
             if (embeds.length > 0) {
