@@ -3,7 +3,7 @@ name: Build Mod Index
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */5 * * *" # every 5 hours
+    - cron: "0 */5 * * *" 
 
 jobs:
   build:
@@ -21,17 +21,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies
-        run: npm install node-fetch@3
-
       - name: Build mod index
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           node << 'EOF'
-          import fs from "fs";
-          import fetch from "node-fetch";
+          const fs = require("fs");
 
           const GH_API = "https://api.github.com";
           const TOPIC = "pvz-rh-mod";
@@ -49,13 +45,13 @@ jobs:
             return fetch(url, { headers });
           }
 
-          async function getAllRepos() {
+          async function getAllReposWithTopic(topic) {
             const repos = [];
             let page = 1;
             const seen = new Set();
 
             while (true) {
-              const url = `${GH_API}/search/repositories?q=topic:${TOPIC}&per_page=${PER_PAGE}&page=${page}`;
+              const url = `${GH_API}/search/repositories?q=topic:${encodeURIComponent(topic)}&per_page=${PER_PAGE}&page=${page}`;
               const res = await ghFetch(url);
               if (!res.ok) break;
 
@@ -76,14 +72,14 @@ jobs:
             return repos;
           }
 
-          async function fetchRaw(owner, repo, branch, path) {
+          async function fetchRawFile(owner, repo, branch, path) {
             const url = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
             const res = await fetch(url);
             if (!res.ok) return null;
             return await res.text();
           }
 
-          async function fetchRelease(owner, repo) {
+          async function fetchLatestRelease(owner, repo) {
             const url = `${GH_API}/repos/${owner}/${repo}/releases/latest`;
             const res = await ghFetch(url);
             if (!res.ok) return null;
@@ -95,107 +91,244 @@ jobs:
             skipReport.push({ repo, reason });
           }
 
-          function hasRequired(mod) {
-            const req = ["Id", "name", "creator", "version", "teaser", "loader"];
-            return req.every(k => typeof mod[k] === "string" && mod[k].trim() !== "");
+          function hasRequiredFields(mod) {
+            const required = ["Id", "name", "creator", "version", "teaser", "loader"];
+            return required.every(k => typeof mod[k] === "string" && mod[k].trim() !== "");
           }
 
-          function normalizeLoader(l) {
-            l = l.toLowerCase();
+          function normalizeLoader(loader) {
+            const l = String(loader).toLowerCase();
             if (l === "melon") return "melon";
             if (l === "bepinex") return "bepinex";
             if (l === "melon/bepinex" || l === "bepinex/melon") return "melon/bepinex";
             return null;
           }
 
-          function parseGameVersions(v) {
-            if (!v || typeof v !== "string") return null;
-            const parts = v.split(",").map(x => x.trim()).filter(x => x.length > 0);
+          function parseGameVersions(gameVersion) {
+            if (typeof gameVersion !== "string" || gameVersion.trim() === "") return null;
+            const parts = gameVersion
+              .split(",")
+              .map(v => v.trim())
+              .filter(v => v.length > 0);
             return parts.length > 0 ? parts : null;
           }
 
-          function detectLoader(base, assetName) {
-            const n = assetName.toLowerCase();
-            if (base === "melon" || base === "bepinex") return base;
+          function detectFinalLoader(baseLoader, assetName) {
+            const name = assetName.toLowerCase();
 
-            if (base === "melon/bepinex") {
-              const hasB = n.includes("bepinex_");
-              const hasM = n.includes("melonloader_");
-              if (hasB && !hasM) return "bepinex";
-              if (hasM && !hasB) return "melon";
-              return "both";
+            if (baseLoader === "melon" || baseLoader === "bepinex") {
+              return baseLoader;
             }
+
+            if (baseLoader === "melon/bepinex") {
+              const hasBep = name.includes("bepinex_");
+              const hasMelon = name.includes("melonloader_");
+
+              if (hasBep && !hasMelon) return "bepinex";
+              if (hasMelon && !hasBep) return "melon";
+
+              return "both"; // ambiguous, include in both
+            }
+
             return null;
           }
 
-          async function sendDiscord(msg) {
+          async function safeDiscordSend(payload) {
             if (!webhook) return;
-            await fetch(webhook, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ content: msg })
-            });
+            let retries = 3;
+
+            while (retries > 0) {
+              const res = await fetch(webhook, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+              });
+
+              if (res.status !== 429) return;
+
+              const retryAfter = Number(res.headers.get("Retry-After")) || 2;
+              await new Promise(r => setTimeout(r, retryAfter * 1000));
+              retries--;
+            }
+          }
+
+          async function sendDiscordEmbeds(embeds) {
+            if (!webhook) return;
+            for (let i = 0; i < embeds.length; i += 10) {
+              const chunk = embeds.slice(i, i + 10);
+              await safeDiscordSend({ embeds: chunk });
+            }
+          }
+
+          function buildModEmbed(title, mod, color) {
+            const embed = {
+              title: title,
+              description: `**${mod.name}** by ${mod.creator}`,
+              url: `https://github.com/${mod.repo}`,
+              color: color,
+              timestamp: new Date().toISOString()
+            };
+            if (mod.icon) {
+              embed.thumbnail = { url: mod.icon };
+            }
+            return embed;
+          }
+
+          function buildSkipEmbed(title, entry, color) {
+            return {
+              title: title,
+              description: `\`${entry.repo}\`\n**Reason:** ${entry.reason}`,
+              color: color,
+              timestamp: new Date().toISOString()
+            };
+          }
+
+          function loadJson(path, fallback) {
+            try {
+              if (fs.existsSync(path)) {
+                const txt = fs.readFileSync(path, "utf8");
+                return JSON.parse(txt);
+              }
+            } catch {}
+            return fallback;
+          }
+
+          function mapByRepo(arr) {
+            const map = new Map();
+            for (const e of arr) {
+              map.set(e.repo, e);
+            }
+            return map;
+          }
+
+          function diffMods(oldArr, newArr) {
+            const oldMap = mapByRepo(oldArr);
+            const newMap = mapByRepo(newArr);
+
+            const added = [];
+            const removed = [];
+            const updated = [];
+
+            for (const [repo, newEntry] of newMap.entries()) {
+              if (!oldMap.has(repo)) {
+                added.push(newEntry);
+              } else {
+                const oldEntry = oldMap.get(repo);
+                if (JSON.stringify(oldEntry) !== JSON.stringify(newEntry)) {
+                  updated.push(newEntry);
+                }
+              }
+            }
+
+            for (const [repo, oldEntry] of oldMap.entries()) {
+              if (!newMap.has(repo)) {
+                removed.push(oldEntry);
+              }
+            }
+
+            return { added, removed, updated };
+          }
+
+          function diffSkips(oldArr, newArr) {
+            const oldMap = mapByRepo(oldArr);
+            const newMap = mapByRepo(newArr);
+
+            const newlyBroken = [];
+            const fixed = [];
+
+            for (const [repo, newEntry] of newMap.entries()) {
+              if (!oldMap.has(repo)) {
+                newlyBroken.push(newEntry);
+              }
+            }
+
+            for (const [repo, oldEntry] of oldMap.entries()) {
+              if (!newMap.has(repo)) {
+                fixed.push(oldEntry);
+              }
+            }
+
+            return { newlyBroken, fixed };
           }
 
           (async () => {
-            const repos = await getAllRepos();
+            const repos = await getAllReposWithTopic(TOPIC);
 
-            const melon = [];
-            const bepinex = [];
+            const melonMods = [];
+            const bepinexMods = [];
 
             for (const repo of repos) {
               const owner = repo.owner.login;
               const name = repo.name;
               const branch = repo.default_branch;
-              const key = `${owner}/${name}`;
+              const repoKey = `${owner}/${name}`;
 
-              const modJson = await fetchRaw(owner, name, branch, "mod.json");
-              if (!modJson) { skip(key, "mod.json missing"); continue; }
+              const modJsonText = await fetchRawFile(owner, name, branch, "mod.json");
+              if (!modJsonText) {
+                skip(repoKey, "mod.json missing");
+                continue;
+              }
 
               let mod;
-              try { mod = JSON.parse(modJson); }
-              catch { skip(key, "mod.json invalid JSON"); continue; }
+              try {
+                mod = JSON.parse(modJsonText);
+              } catch {
+                skip(repoKey, "mod.json invalid JSON");
+                continue;
+              }
 
-              if (!hasRequired(mod)) { skip(key, "required fields missing"); continue; }
+              if (!hasRequiredFields(mod)) {
+                skip(repoKey, "required fields missing");
+                continue;
+              }
 
               const baseLoader = normalizeLoader(mod.loader);
-              if (!baseLoader) { skip(key, "invalid loader"); continue; }
+              if (!baseLoader) {
+                skip(repoKey, "invalid loader");
+                continue;
+              }
 
               const gameVersions = parseGameVersions(mod.gameVersion);
-              if (!gameVersions) { skip(key, "gameVersion missing"); continue; }
+              if (!gameVersions) {
+                skip(repoKey, "gameVersion missing");
+                continue;
+              }
 
-              const release = await fetchRelease(owner, name);
-              if (!release || !release.assets || release.assets.length === 0) {
-                skip(key, "no valid release");
+              const release = await fetchLatestRelease(owner, name);
+              if (!release || !Array.isArray(release.assets) || release.assets.length === 0) {
+                skip(repoKey, "no valid release");
                 continue;
               }
 
               const asset = release.assets[0];
               if (!asset.browser_download_url) {
-                skip(key, "release missing download URL");
+                skip(repoKey, "release asset missing download URL");
                 continue;
               }
 
-              const icon = await fetchRaw(owner, name, branch, "icon.png");
-              const iconUrl = icon
+              const iconTest = await fetchRawFile(owner, name, branch, "icon.png");
+              const iconUrl = iconTest
                 ? `https://raw.githubusercontent.com/${owner}/${name}/${branch}/icon.png`
                 : null;
 
-              let desc = await fetchRaw(owner, name, branch, "Description.md");
-              if (!desc) desc = null;
+              let description = await fetchRawFile(owner, name, branch, "Description.md");
+              if (!description) description = null;
 
-              const finalLoader = detectLoader(baseLoader, asset.name);
-              if (!finalLoader) { skip(key, "unable to determine loader"); continue; }
+              const finalLoader = detectFinalLoader(baseLoader, asset.name);
+              if (!finalLoader) {
+                skip(repoKey, "unable to determine loader type");
+                continue;
+              }
 
-              const entry = {
-                repo: key,
+              const baseEntry = {
+                repo: repoKey,
                 id: mod.Id,
                 name: mod.name,
                 creator: mod.creator,
                 version: mod.version,
                 teaser: mod.teaser,
                 gameVersion: gameVersions,
-                description: desc,
+                description: description,
                 tags: Array.isArray(mod.tags) ? mod.tags : [],
                 icon: iconUrl,
                 lastUpdated: release.published_at || release.created_at || repo.updated_at,
@@ -203,60 +336,74 @@ jobs:
                 download: asset.browser_download_url
               };
 
-              if (finalLoader === "melon") melon.push(entry);
-              else if (finalLoader === "bepinex") bepinex.push(entry);
-              else { melon.push(entry); bepinex.push(entry); }
+              if (finalLoader === "melon") {
+                melonMods.push({ ...baseEntry, loader: "melon" });
+              } else if (finalLoader === "bepinex") {
+                bepinexMods.push({ ...baseEntry, loader: "bepinex" });
+              } else if (finalLoader === "both") {
+                melonMods.push({ ...baseEntry, loader: "melon" });
+                bepinexMods.push({ ...baseEntry, loader: "bepinex" });
+              }
             }
 
-            function loadOld(path) {
-              return fs.existsSync(path)
-                ? JSON.parse(fs.readFileSync(path, "utf8"))
-                : [];
+            if (!fs.existsSync(".github/history")) {
+              fs.mkdirSync(".github/history", { recursive: true });
             }
 
-            const oldMelon = loadOld("melon-mods.old.json");
-            const oldBep = loadOld("bepinex-mods.old.json");
-            const oldSkip = loadOld("skip-report.old.json");
+            const oldMelon = loadJson(".github/history/melon-mods.old.json", []);
+            const oldBep = loadJson(".github/history/bepinex-mods.old.json", []);
+            const oldSkip = loadJson(".github/history/skip-report.old.json", []);
 
-            const newMelon = melon.map(m => m.repo);
-            const newBep = bepinex.map(m => m.repo);
-            const newSkip = skipReport.map(s => s.repo);
+            const melonDiff = diffMods(oldMelon, melonMods);
+            const bepDiff = diffMods(oldBep, bepinexMods);
+            const skipDiff = diffSkips(oldSkip, skipReport);
 
-            const addedMelon = newMelon.filter(x => !oldMelon.includes(x));
-            const removedMelon = oldMelon.filter(x => !newMelon.includes(x));
+            const embeds = [];
 
-            const addedBep = newBep.filter(x => !oldBep.includes(x));
-            const removedBep = oldBep.filter(x => !newBep.includes(x));
+            for (const mod of melonDiff.added) {
+              embeds.push(buildModEmbed("🟢 New Melon Mod", mod, 0x00ff00));
+            }
+            for (const mod of bepDiff.added) {
+              embeds.push(buildModEmbed("🟢 New BepInEx Mod", mod, 0x00ff00));
+            }
 
-            const addedSkip = newSkip.filter(x => !oldSkip.includes(x));
-            const removedSkip = oldSkip.filter(x => !newSkip.includes(x));
+            for (const mod of melonDiff.updated) {
+              embeds.push(buildModEmbed("🟦 Updated Melon Mod", mod, 0x0000ff));
+            }
+            for (const mod of bepDiff.updated) {
+              embeds.push(buildModEmbed("🟦 Updated BepInEx Mod", mod, 0x0000ff));
+            }
 
-            if (addedMelon.length > 0)
-              await sendDiscord(`🟢 **New Melon Mods:**\n${addedMelon.join("\n")}`);
+            for (const mod of melonDiff.removed) {
+              embeds.push(buildModEmbed("🔴 Removed Melon Mod", mod, 0xff0000));
+            }
+            for (const mod of bepDiff.removed) {
+              embeds.push(buildModEmbed("🔴 Removed BepInEx Mod", mod, 0xff0000));
+            }
 
-            if (removedMelon.length > 0)
-              await sendDiscord(`🔴 **Removed Melon Mods:**\n${removedMelon.join("\n")}`);
+            for (const entry of skipDiff.newlyBroken) {
+              embeds.push(buildSkipEmbed("⚠️ New Broken Mod", entry, 0xffa500));
+            }
 
-            if (addedBep.length > 0)
-              await sendDiscord(`🟢 **New BepInEx Mods:**\n${addedBep.join("\n")}`);
+            for (const entry of skipDiff.fixed) {
+              embeds.push(buildSkipEmbed("🟢 Fixed Mod (No Longer Skipped)", entry, 0x00ff00));
+            }
 
-            if (removedBep.length > 0)
-              await sendDiscord(`🔴 **Removed BepInEx Mods:**\n${removedBep.join("\n")}`);
+            if (embeds.length > 0) {
+              await sendDiscordEmbeds(embeds);
+            }
 
-            if (addedSkip.length > 0)
-              await sendDiscord(`⚠️ **New Skipped Mods:**\n${addedSkip.join("\n")}`);
-
-            if (removedSkip.length > 0)
-              await sendDiscord(`🟢 **Fixed Mods (no longer skipped):**\n${removedSkip.join("\n")}`);
-
-            fs.writeFileSync("melon-mods.json", JSON.stringify(melon, null, 2));
-            fs.writeFileSync("bepinex-mods.json", JSON.stringify(bepinex, null, 2));
+            fs.writeFileSync("melon-mods.json", JSON.stringify(melonMods, null, 2));
+            fs.writeFileSync("bepinex-mods.json", JSON.stringify(bepinexMods, null, 2));
             fs.writeFileSync("skip-report.json", JSON.stringify(skipReport, null, 2));
 
-            fs.writeFileSync("melon-mods.old.json", JSON.stringify(newMelon, null, 2));
-            fs.writeFileSync("bepinex-mods.old.json", JSON.stringify(newBep, null, 2));
-            fs.writeFileSync("skip-report.old.json", JSON.stringify(newSkip, null, 2));
-          })();
+            fs.writeFileSync(".github/history/melon-mods.old.json", JSON.stringify(oldMelon.length ? melonMods : melonMods, null, 2));
+            fs.writeFileSync(".github/history/bepinex-mods.old.json", JSON.stringify(oldBep.length ? bepinexMods : bepinexMods, null, 2));
+            fs.writeFileSync(".github/history/skip-report.old.json", JSON.stringify(oldSkip.length ? skipReport : skipReport, null, 2));
+          })().catch(err => {
+            console.error("Error building mod index:", err);
+            process.exit(1);
+          });
           EOF
 
       - name: Commit mod index
@@ -264,6 +411,6 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add melon-mods.json bepinex-mods.json skip-report.json
-          git add melon-mods.old.json bepinex-mods.old.json skip-report.old.json
+          git add .github/history/melon-mods.old.json .github/history/bepinex-mods.old.json .github/history/skip-report.old.json
           git commit -m "Update mod index" || echo "No changes"
           git push
