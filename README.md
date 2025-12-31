@@ -36,6 +36,7 @@ The asset name to determine loader type (if ambiguous)
 ## ✔ icon.png (optional but recommended)
 
 Used as the mod’s thumbnail in the game
+
 Recommend size is 256x256
 
 ## ✔ Description.md (optional)
