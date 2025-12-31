@@ -15,7 +15,7 @@ Your repository must contain the following files in the root directory:
 ├── icon.png          # Optional (recommended)
 └── Description.md    # Optional
 ```
-## ✔ Mod.json (required)
+## ✔ mod.json (required)
 
 Defines your mod’s metadata. Must be valid JSON and include all required fields.
 
