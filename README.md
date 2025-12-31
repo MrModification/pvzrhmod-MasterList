@@ -77,8 +77,17 @@ Contains both or neither → included in both lists
 gameVersion must be a string, not an array.
 
 Example:
-"3.2.1" or
-"3.1.1, 3.0.1"
+"3.2.1"
+
+Treated as minimum game version if one
+Treated as range if two
+Treated as specific if three +
+
+Advanced Example:
+"3.1.1" will work on 3.2.1 
+"3.0.1, 3.2.1" will work in this range
+"3.0.1, 3.1.1, 3.2.1" will work for these three specific
+"3.0.1, 0, 0" only works for 3.0.1
 
 ## 📄 Template mod.json
 
