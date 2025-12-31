@@ -111,7 +111,7 @@ Use this as a starting point:
 Your release must contain the following files in the root directory:
 ```
 /
-├── mod.json          # Required
+├── mod.json          # Optional (recommended)
 ├── icon.png          # Optional (recommended)
 ├── Description.md    # Optional
 ├── /Mods             # If MelonMod or Both
