@@ -111,13 +111,18 @@ Use this as a starting point:
 Your release must contain the following files in the root directory:
 ```
 /
-├── mod.json          # Optional (recommended)
-├── icon.png          # Optional (recommended)
-├── Description.md    # Optional
-├── /Mods             # If MelonMod or Both
+├── /Mods              # If MelonMod or Both
+|   └──your.unique.mod.id/     # ModId
+|      ├── mod.json
+|      ├── icon.png    # Optional (recommended)
+|      └── mod.dll
+|
 └── /BepInEx          # If BepInExMod or Both
     └── /plugins
-
+        └──your.unique.mod.id/     # ModId
+           ├── mod.json
+           ├── icon.png    # Optional (recommended)
+           └── mod.dll
 ```
 
 ## 🚀 Publishing Your Mod
