@@ -13,6 +13,8 @@
     "tags": [
       "util"
     ],
+    "dependencies": [],
+    "releaseNotes": "",
     "icon": "https://raw.githubusercontent.com/MrModification/PVZF-CommandConsole/main/icon.png",
     "lastUpdated": "2025-12-31T08:30:23Z",
     "githubStars": 0,
