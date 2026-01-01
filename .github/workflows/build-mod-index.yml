@@ -311,8 +311,22 @@ jobs:
                 ? `https://raw.githubusercontent.com/${owner}/${name}/${branch}/icon.png`
                 : null;
 
-              let description = await fetchRawFile(owner, name, branch, "Description.md");
-              if (!description) description = null;
+              let description = null;
+              // If mod.json has a description field
+              if (typeof mod.description === "string" && mod.description.trim() !== "") {
+                if (mod.description.toLowerCase().endsWith(".md")) {
+                // Load markdown file
+              const md = await fetchRawFile(owner, name, branch, mod.description);
+              description = md || null;
+            } else {
+              // Inline description text
+              description = mod.description;
+            }
+          } else {
+            // Fallback: try Description.md
+            const md = await fetchRawFile(owner, name, branch, "Description.md");
+            description = md || null;
+          }
 
               const finalLoader = detectFinalLoader(baseLoader, asset.name);
               if (!finalLoader) {
@@ -330,6 +344,8 @@ jobs:
                 gameVersion: gameVersions,
                 description: description,
                 tags: Array.isArray(mod.tags) ? mod.tags : [],
+                dependencies: Array.isArray(mod.dependencies) ? mod.dependencies : [],
+                releaseNotes: typeof mod.releaseNotes === "string" ? mod.releaseNotes : null,
                 icon: iconUrl,
                 lastUpdated: release.published_at || release.created_at || repo.updated_at,
                 githubStars: repo.stargazers_count || 0,
